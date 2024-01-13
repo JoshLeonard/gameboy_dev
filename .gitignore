@@ -1,0 +1,5 @@
+*.o
+*.sav
+
+emulator/
+rgbds/
