@@ -2,6 +2,9 @@ INCLUDE "hardware.inc"
 
 DEF BallX EQU $FE00 + $05
 DEF BallY EQU $FE00 + $04
+DEF BRICK_LEFT EQU $05
+DEF BRICK_RIGHT EQU $06
+DEF BLANK_TILE EQU $08
 
 SECTION "Header", ROM0[$100]
 
@@ -11,79 +14,7 @@ SECTION "Header", ROM0[$100]
 
 EntryPoint:
 
-WaitVBlank:
-    ld a, [rLY]
-    cp 144
-    jp c, WaitVBlank
-
-    ld a, 0
-    ld [rLCDC], a
-
-    ld de, Tiles
-    ld hl, $9000
-    ld bc, TilesEnd - Tiles
-	call Memcopy
-
-    ld de, Tilemap
-    ld hl, $9800
-    ld bc, TilemapEnd- Tilemap
-	call Memcopy
-	
-	ld de, Paddle
-	ld hl, $8000
-	ld bc, PaddleEnd - Paddle
-	call Memcopy
-
-	ld de, Ball
-	ld hl, $8010
-	ld bc, BallEnd - Ball
-	call Memcopy
-
-	ld a, 0
-	ld b, 160
-	ld hl, _OAMRAM
-ClearOam:
-	ld [hl+], a
-	dec b
-	jp nz,  ClearOam
-
-	; Write paddle to oam
-	ld hl, _OAMRAM
-	ld a, 142
-	ld [hl+], a
-	ld a, 16 + 8
-	ld [hl+], a
-	ld a, 0
-	ld [hl+], a
-	ld [hl+], a
-
-	; Write ball to oam
-	ld a, 100 + 16
-	ld [hl+], a ; y pos
-	ld a, 32 + 8
-	;ld [hl+], a ; x pos
-	ld [BallX], a
-	inc hl
-	ld a, 1 
-	ld [hl+], a ; tile id
-	ld a, 0
-	ld [hl], a ; attributes
-
-	ld a, 1
-	ld [wBallMomentumX], a
-	ld a, -1
-	ld [wBallMomentumY], a
-
-    ld a, LCDCF_ON | LCDCF_BGON | LCDCF_OBJON
-    ld [rLCDC], a
-
-	ld a, %11100100
-    ld [rBGP], a
-	ld a, %11100100
-	ld [rOBP0], a
-
-	ld a, 0
-	ld [wFrameCounter], a
+    call LoadGraphics
 
 Main:
 	ld a, [rLY]
@@ -94,15 +25,92 @@ WaitVBlank2:
 	cp 144
 	jp c, WaitVBlank2
 
-	; ld a, [wFrameCounter]
-	; inc a
-	; ld [wFrameCounter], a
-	; cp a, 15
-	; jp nz, Main
-
-	; ld a, 0
-	; ld [wFrameCounter], a
 	call UpdateBall
+BounceOnTop:
+    ; Remember to offset the OAM position!
+    ; (8, 16) in OAM coordinates is (0, 0) on the screen.
+    ld a, [BallY]
+    sub a, 16 + 1 ; offset because 
+    ld c, a
+    ld a, [BallX]
+    sub a, 8
+    ld b, a
+    call GetTileByPixel
+    ld a, [hl]
+    call IsWallTile
+    jp nz, BounceOnRight
+    call CheckAndHandleBrick
+    ld a, 1
+    ld [wBallMomentumY], a
+ BounceOnRight:
+    ld a, [BallY]
+    sub a, 16
+    ld c, a
+    ld a, [BallX]
+    sub a, 8-1
+    ld b, a
+    call GetTileByPixel
+    ld a, [hl]
+    call IsWallTile
+    jp nz, BounceOnLeft
+    call CheckAndHandleBrick
+    ld a, -1
+    ld [wBallMomentumX], a
+BounceOnLeft:
+    ld a, [BallY]
+    sub a, 16
+    ld c, a
+    ld a, [BallX]
+    sub a, 8+1
+    ld b, a
+    call GetTileByPixel
+    ld a, [hl]
+    call IsWallTile
+    jp nz, BounceOnBottom
+    call CheckAndHandleBrick
+    ld a, 1
+    ld [wBallMomentumX], a
+
+BounceOnBottom:
+    ld a, [BallY]
+    sub a, 16 - 1
+    ld c, a
+    ld a, [BallX]
+    sub a, 8
+    ld b, a
+    call GetTileByPixel
+    ld a, [hl]
+    call IsWallTile
+    jp nz, BounceDone
+    call CheckAndHandleBrick
+    ld a, -1
+    ld [wBallMomentumY], a
+BounceDone:
+
+    ; First, check if the ball is low enough to bounce off the paddle.
+    ld a, [_OAMRAM]
+    ld b, a
+    ld a, [_OAMRAM + 4]
+    add a, 4
+    cp a, b
+    jp nz, PaddleBounceDone ; If the ball isn't at the same Y position as the paddle, it can't bounce.
+    ; Now let's compare the X positions of the objects to see if they're touching.
+    ld a, [_OAMRAM + 5] ; Ball's X position.
+    ld b, a
+    ld a, [_OAMRAM + 1] ; Paddle's X position.
+    sub a, 8
+    cp a, b
+    jp nc, PaddleBounceDone
+    add a, 8 + 16 ; 8 to undo, 16 as the width.
+    cp a, b
+    jp c, PaddleBounceDone
+
+    ld a, -1
+    ld [wBallMomentumY], a
+
+PaddleBounceDone:
+
+
 	call UpdateKeys
 
 CheckLeft:
@@ -130,6 +138,23 @@ Right:
 	jp Main
 
     jp Main
+
+; Checks if a brick was collided with and breaks it if possible
+; @param hl: address of tile
+CheckAndHandleBrick:
+    ld a, [hl]
+    cp a, BRICK_LEFT
+    jr nz, CheckAndHandleBrickRight
+    ld [hl], BLANK_TILE
+    inc hl
+    ld [hl], BLANK_TILE
+CheckAndHandleBrickRight:
+    cp a, BRICK_RIGHT
+    ret nz
+    ld [hl], BLANK_TILE
+    dec hl
+    ld [hl], BLANK_TILE
+    ret
 
 ; Copy bytes from one area to another
 ; @param de: Source
@@ -194,17 +219,17 @@ UpdateBall:
 	ld hl, wBallMomentumX
 	add a, [hl]
 	ld [BallX], a
-	cp 105
-	jp nz, .xcon ; revere vloc if ball hits wall
-	ld a, -1
-	ld hl, wBallMomentumX
-	ld [hl], a
-.xcon:
-	cp 15
-	jp nz, .y
-	ld a, 1
-	ld hl, wBallMomentumX
-	ld [hl], a
+; 	cp 105
+; 	jp nz, .xcon ; revere vloc if ball hits wall
+; 	ld a, -1
+; 	ld hl, wBallMomentumX
+; 	ld [hl], a
+; .xcon:
+; 	cp 15
+; 	jp nz, .y
+; 	ld a, 1
+; 	ld hl, wBallMomentumX
+; 	ld [hl], a
 .y:
 	ld a, [BallY]
 	ld hl, wBallMomentumY
@@ -240,7 +265,7 @@ GetTileByPixel:
 	add hl, bc
 	ret
 
-	IsWallTile:
+IsWallTile:
     cp a, $00
     ret z
     cp a, $01
@@ -254,6 +279,82 @@ GetTileByPixel:
     cp a, $06
     ret z
     cp a, $07
+    ret
+
+LoadGraphics:
+.WaitVBlank:
+    ld a, [rLY]
+    cp 144
+    jp c, .WaitVBlank
+
+    ld a, 0
+    ld [rLCDC], a
+
+    ld de, Tiles
+    ld hl, $9000
+    ld bc, TilesEnd - Tiles
+	call Memcopy
+
+    ld de, Tilemap
+    ld hl, $9800
+    ld bc, TilemapEnd- Tilemap
+	call Memcopy
+	
+	ld de, Paddle
+	ld hl, $8000
+	ld bc, PaddleEnd - Paddle
+	call Memcopy
+
+	ld de, Ball
+	ld hl, $8010
+	ld bc, BallEnd - Ball
+	call Memcopy
+
+	ld a, 0
+	ld b, 160
+	ld hl, _OAMRAM
+.ClearOam:
+	ld [hl+], a
+	dec b
+	jp nz,  .ClearOam
+
+	; Write paddle to oam
+	ld hl, _OAMRAM
+	ld a, 142
+	ld [hl+], a
+	ld a, 16 + 8
+	ld [hl+], a
+	ld a, 0
+	ld [hl+], a
+	ld [hl+], a
+
+	; Write ball to oam
+	ld a, 100 + 16
+	ld [hl+], a ; y pos
+	ld a, 32 + 8
+	;ld [hl+], a ; x pos
+	ld [BallX], a
+	inc hl
+	ld a, 1 
+	ld [hl+], a ; tile id
+	ld a, 0
+	ld [hl], a ; attributes
+
+	ld a, 1
+	ld [wBallMomentumX], a
+	ld a, -1
+	ld [wBallMomentumY], a
+
+    ld a, LCDCF_ON | LCDCF_BGON | LCDCF_OBJON
+    ld [rLCDC], a
+
+	ld a, %11100100
+    ld [rBGP], a
+	ld a, %11100100
+	ld [rOBP0], a
+
+	ld a, 0
+	ld [wFrameCounter], a
     ret
 
 
