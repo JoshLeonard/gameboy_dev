@@ -21,6 +21,10 @@ WaitVBlank:
 	ld a, 0
 	ld [rLCDC], a
 
+	; Init vars
+	ld a, 0
+	ld [wCounter], a
+
 	; Copy the tile data
 	ld de, Tiles
 	ld hl, $9000
@@ -47,6 +51,23 @@ CopyTilemap:
 	or a, c
 	jp nz, CopyTilemap
 
+	ld de, textFont
+	ld hl, $9000 + (TilesEnd - Tiles)
+	ld bc, textFontEnd - textFont
+COPYTEXT:
+	ld a, [de]
+	ld [hl+], a
+	inc de
+	dec bc
+	ld a, b
+	or a, c
+	jp nz, COPYTEXT
+
+	ld hl, $9842
+	ld de, $9540
+	ld a, [de]
+	ld [hl], a
+
 	; Turn the LCD on
 	ld a, LCDCF_ON | LCDCF_BGON
 	ld [rLCDC], a
@@ -55,11 +76,32 @@ CopyTilemap:
 	ld a, %11100100
 	ld [rBGP], a
 
+
 Done:
+	ld a, [wCounter]
+	inc a
+	ld [wCounter], a
+	cp 500
+	jp c, Done
+	ld a, 0
+	ld [wCounter], a
+	ld a, [rSCX]
+	inc a
+	ld [rSCX], a
+
+
+
 	jp Done
 
+SECTION "vars", wram0
+wCounter: db
 
+SECTION "String Data", rom0
+	
 SECTION "Tile data", ROM0
+
+textFont: INCBIN "chars.2bpp"
+textFontEnd:
 
 Tiles:
 	db $00,$ff, $00,$ff, $00,$ff, $00,$ff, $00,$ff, $00,$ff, $00,$ff, $00,$ff

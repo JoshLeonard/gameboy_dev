@@ -1,0 +1,1 @@
+rgbasm -L -o main.o hello-world.asm && rgblink main.o -n main.sym -o main.gb
